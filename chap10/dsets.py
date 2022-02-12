@@ -4,6 +4,9 @@ import functools
 import glob
 import os
 
+import SimpleITK as sitk
+import numpy as np
+
 
 CandidateInfoTuple = namedtuple(
     "CandidateInfoTuple",
@@ -60,3 +63,20 @@ def getCandidateInfoList(requireOnDesk_bool=True):
     
     candidateInfo_list.sort(reverse=True)
     return candidateInfo_list
+
+class Ct:
+    def __init__(self, series_uid):
+        mhd_path = glob.glob(
+            "luna/subset*/{}.mhd".format(series_uid)
+        )[0]
+
+        ct_mhd = sitk.ReadImage(mhd_path)
+        ct_a = np.array(sitk.GetArrayFromImage(ct_mhd), dtype=np.float32)
+
+        #
+        #
+        #
+        ct_a.clip(-1000, 1000, ct_a)
+
+        self.seried_uid = series_uid
+        self.hu_a = ct_a
