@@ -3,9 +3,12 @@ import csv
 import functools
 import glob
 import os
+from tkinter import SOLID
 
 import SimpleITK as sitk
 import numpy as np
+
+from chap10.util import XyzTuple, xyz2irc
 
 
 CandidateInfoTuple = namedtuple(
@@ -80,3 +83,39 @@ class Ct:
 
         self.seried_uid = series_uid
         self.hu_a = ct_a
+
+        self.origin_xyz = XyzTuple(*ct_mhd.GetOrigin())
+        self.vsSize_xyz = XyzTuple(*ct_mhd.GetSpacing())
+        self.direction_a = np.array(ct_mhd.GetDirection()).reshape(3, 3)
+    def getRawCandidate(self, center_xyz, width_irc):
+        center_irc = xyz2irc(
+            center_xyz,
+            self.origin_xyz,
+            self.vsSize_xyz,
+            self.direction_a,
+        )
+
+        slice_list = []
+        for axis, center_val in enumerate(center_irc):
+            start_ndx = int(round(center_val - width_irc[axis]/2))
+            end_ndx = int(start_ndx + width_irc[axis])
+
+            assert center_val >= 0 and center_val < self.hu_a.shape[axis], repr([self.series_uid, center_xyz, self.origin_xyz, self.vxSize_xyz, center_irc, axis])
+
+            if start_ndx < 0:
+                # log.warning("Crop outside of CT array: {} {}, center:{} shape:{} width:{}".format(
+                #     self.series_uid, center_xyz, center_irc, self.hu_a.shape, width_irc))
+                start_ndx = 0
+                end_ndx = int(width_irc[axis])
+
+            if end_ndx > self.hu_a.shape[axis]:
+                # log.warning("Crop outside of CT array: {} {}, center:{} shape:{} width:{}".format(
+                #     self.series_uid, center_xyz, center_irc, self.hu_a.shape, width_irc))
+                end_ndx = self.hu_a.shape[axis]
+                start_ndx = int(self.hu_a.shape[axis] - width_irc[axis])
+            
+            slice_list.append(slice(start_ndx, end_ndx))
+
+        ct_chunk = self.hu_a[tuple(slice_list)]
+
+        return ct_chunk, center_irc
