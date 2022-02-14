@@ -1,15 +1,28 @@
 from collections import namedtuple
+import copy
 import csv
 import functools
 import glob
 import os
-from tkinter import SOLID
 
 import SimpleITK as sitk
 import numpy as np
 
-from chap10.util import XyzTuple, xyz2irc
+import torch
+import torch.cuda
+from torch.utils.data import Dataset
 
+from util.disk import getCache
+from chap10.util import XyzTuple, xyz2irc
+from util.logconf import logging
+
+
+log = logging.getLogger(__name__)
+# log.setLevel(logging.WARN)
+# log.setLevel(logging.INFO)
+log.setLevel(logging.DEBUG)
+
+raw_cache = getCache('part2ch10_raw')
 
 CandidateInfoTuple = namedtuple(
     "CandidateInfoTuple",
@@ -79,6 +92,7 @@ class Ct:
         #
         #
         #
+        #
         ct_a.clip(-1000, 1000, ct_a)
 
         self.seried_uid = series_uid
@@ -87,6 +101,7 @@ class Ct:
         self.origin_xyz = XyzTuple(*ct_mhd.GetOrigin())
         self.vsSize_xyz = XyzTuple(*ct_mhd.GetSpacing())
         self.direction_a = np.array(ct_mhd.GetDirection()).reshape(3, 3)
+
     def getRawCandidate(self, center_xyz, width_irc):
         center_irc = xyz2irc(
             center_xyz,
@@ -119,3 +134,72 @@ class Ct:
         ct_chunk = self.hu_a[tuple(slice_list)]
 
         return ct_chunk, center_irc
+
+
+@functools.lru_cache(1, typed=True)
+def getCt(series_uid):
+    return Ct(series_uid)
+
+@raw_cache.memoize(typed=True)
+def getCtRawCandidate(series_uid, center_xyz, width_irc):
+    ct = getCt(series_uid)
+    ct_chunk, center_irc = ct.getRawCandidate(center_xyz, width_irc)
+    return ct_chunk, center_irc
+    
+class LunaDataset(Dataset):
+    def __init__(self,
+                 val_stride=0,
+                 isValSet_bool=None,
+                 series_uid=None,
+            ):
+        self.candidateInfo_list = copy.copy(getCandidateInfoList())
+
+        if series_uid:
+            self.candidateInfo_list = [
+                x for x in self.candidateInfo_list if x.series_uid == series_uid
+            ]
+
+        if isValSet_bool:
+            assert val_stride > 0, val_stride
+            self.candidateInfo_list = self.candidateInfo_list[::val_stride]
+            assert self.candidateInfo_list
+        elif val_stride > 0:
+            del self.candidateInfo_list[::val_stride]
+            assert self.candidateInfo_list
+
+        log.info("{!r}: {} {} samples".format(
+            self,
+            len(self.candidateInfo_list),
+            "validation" if isValSet_bool else "training",
+        ))
+
+        def __len__(self):
+            return len(self.candidateInfo_list)
+
+        def __getitem__(self, ndx):
+            candidateInfo_tup = self.candidateInfo_list[ndx]
+            width_irc = (32, 48, 48)
+
+            candidate_a, center_irc = getCtRawCandidate(
+                candidateInfo_tup.series_uid,
+                candidateInfo_tup.center_xyz,
+                width_irc,
+            )
+
+            candidate_t = torch.from_numpy(candidate_a)
+            candidate_t = candidate_t.to(torch.float32)
+            candidate_t = candidate_t.unsqueeze(0)
+
+            pos_t = torch.tensor([
+                not candidateInfo_tup.isNodule_bool,
+                candidateInfo_tup.isNodule_bool
+            ],
+            dtype=torch.long,
+            )
+
+            return (
+                candidate_t,
+                pos_t,
+                candidateInfo_tup.series_uid,
+                torch.tensor(center_irc),
+            )
